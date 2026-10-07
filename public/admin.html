@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard - Digital Signage</title>
+  <link rel="stylesheet" href="/admin.css">
+  <!-- Local PDF.js for rendering PDF previews in Admin UI -->
+  <script src="/libs/pdfjs/pdf.min.js"></script>
+  <!-- Socket.io Client -->
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    
+    <!-- Top Navbar -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="brand-icon">
+          <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 20.25h12m-7.5-3v3m3-3v3m-10.125-3h17.25c.621 0 1.125-.504 1.125-1.125V4.875c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125z" />
+          </svg>
+        </div>
+        <div>
+          <div style="display: flex; align-items: center; gap: 0.6rem;">
+            <h1 class="brand-title">Digital Signage</h1>
+            <span class="brand-badge">Admin</span>
+          </div>
+          <p style="font-size: 0.8rem; color: var(--text-dim); margin-top: 0.1rem;">Real-time Display Management</p>
+        </div>
+      </div>
+
+      <div class="nav-actions">
+        <div class="status-badge" title="WebSocket Connection Status">
+          <span class="pulse-dot" id="server-status-dot"></span>
+          <span id="server-status-text">Connected</span>
+        </div>
+
+        <div class="status-badge" title="Connected TV Displays">
+          <svg style="width: 15px; height: 15px; color: var(--accent-cyan);" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+          <span id="tv-count-text">0 TV Connected</span>
+        </div>
+
+        <a href="/tv" target="_blank" class="btn-open-tv" title="Open TV Client in a new tab/window">
+          <span>Open TV Display</span>
+          <svg fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+          </svg>
+        </a>
+      </div>
+    </header>
+
+    <!-- Main Content Grid -->
+    <main class="dashboard-grid">
+      
+      <!-- Left Sidebar: Monitor & Upload -->
+      <aside class="sidebar">
+        
+        <!-- Live TV Screen Monitor -->
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              Live on TV Screen
+            </h2>
+            <span id="live-indicator-badge" class="monitor-badge" style="display: none; position: static;">LIVE</span>
+          </div>
+
+          <div class="monitor-screen" id="monitor-box">
+            <div class="monitor-empty" id="monitor-empty">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+              </svg>
+              <span>No media currently playing</span>
+            </div>
+            <img id="monitor-img" style="display: none;" alt="Live Image Preview" />
+            <canvas id="monitor-canvas" style="display: none;"></canvas>
+          </div>
+
+          <div class="monitor-info" id="monitor-info" style="display: none;">
+            <div class="monitor-filename" id="monitor-filename">-</div>
+            <div class="monitor-meta" id="monitor-meta">-</div>
+          </div>
+
+          <div class="monitor-actions">
+            <button id="btn-clear-screen" class="btn btn-danger-outline btn-full" title="Clear TV and show standby screen">
+              <svg style="width: 16px; height: 16px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
+              </svg>
+              Clear TV Screen
+            </button>
+          </div>
+        </div>
+
+        <!-- Upload Card -->
+        <div class="card">
+          <div class="card-header">
+            <h2 class="card-title">
+              <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+              </svg>
+              Upload Media
+            </h2>
+          </div>
+
+          <div class="dropzone" id="dropzone">
+            <svg class="dropzone-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z" />
+            </svg>
+            <div class="dropzone-title">Click to upload or drag & drop</div>
+            <div class="dropzone-hint">Supports Images (.JPG, .PNG, .WEBP) & PDF files (Max 100MB)</div>
+            <input type="file" id="file-input" class="file-input" accept=".jpg,.jpeg,.png,.webp,.pdf">
+          </div>
+
+          <div class="upload-options">
+            <label class="toggle-label">
+              <input type="checkbox" id="auto-push-checkbox" checked>
+              <span>Push to TV automatically on upload</span>
+            </label>
+          </div>
+
+          <!-- Progress Bar -->
+          <div class="progress-container" id="progress-container">
+            <div class="progress-info">
+              <span id="progress-filename">Uploading...</span>
+              <span id="progress-percent">0%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div class="progress-bar-fill" id="progress-bar-fill"></div>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+
+      <!-- Right Main: Media Library Gallery -->
+      <section class="library-section">
+        
+        <div class="library-toolbar">
+          <div class="library-heading">
+            <span>Media Library</span>
+            <span class="library-count" id="library-count">0 items</span>
+          </div>
+
+          <div class="filter-tabs">
+            <button class="filter-tab active" data-filter="all">All</button>
+            <button class="filter-tab" data-filter="image">Images</button>
+            <button class="filter-tab" data-filter="pdf">PDFs</button>
+          </div>
+        </div>
+
+        <!-- Grid Container -->
+        <div class="media-grid" id="media-grid">
+          <!-- Dynamically populated -->
+        </div>
+
+      </section>
+
+    </main>
+
+  </div>
+
+  <!-- Preview Modal -->
+  <div class="modal-backdrop" id="preview-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-filename">Media Preview</div>
+        <button class="modal-close" id="modal-close" title="Close Preview">
+          <svg style="width: 20px; height: 20px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+      <div class="modal-body" id="modal-body">
+        <img id="modal-img" style="display: none;" alt="Modal Preview" />
+        <canvas id="modal-canvas" style="display: none;"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin.js"></script>
+</body>
+</html>

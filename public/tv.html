@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>TV Display - Digital Signage</title>
+  <link rel="stylesheet" href="/tv.css">
+  <!-- Local Mozilla PDF.js (Self-hosted, No CORS/Worker issues, pure canvas rendering) -->
+  <script src="/libs/pdfjs/pdf.min.js"></script>
+  <!-- Socket.io Client -->
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body class="hide-cursor">
+  <div id="display-container">
+    <!-- Standby View (Shown when no media is pushed) -->
+    <div id="standby-view">
+      <div class="standby-logo">
+        <svg fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h12a2.25 2.25 0 002.25-2.25V3m-16.5 0h16.5m-16.5 0v-1.5A1.5 1.5 0 014.5 0h15A1.5 1.5 0 0121 1.5V3M7.5 21h9m-4.5-4.5v4.5" />
+        </svg>
+      </div>
+      <div class="standby-title">Digital Signage Screen</div>
+      <div class="standby-subtitle">Waiting for content to be broadcast from Admin Dashboard...</div>
+      <div class="standby-badge">
+        <span class="dot"></span>
+        <span id="standby-status-text">Connected & Ready</span>
+      </div>
+    </div>
+
+    <!-- Image Display (100vw x 100vh contain mode) -->
+    <img id="tv-image" alt="Digital Signage Media" />
+
+    <!-- PDF Display Canvas (Mozilla PDF.js render target) -->
+    <canvas id="tv-canvas"></canvas>
+
+    <!-- Subtle Loading Overlay -->
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+    </div>
+
+    <!-- Graceful Error Overlay -->
+    <div id="error-overlay">
+      <svg class="error-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+      </svg>
+      <div style="font-size: 1.1rem; color: #a1a1aa;">Unable to load media</div>
+      <div style="font-size: 0.85rem; color: #52525b;">Waiting for next update...</div>
+    </div>
+
+    <!-- Transient Status Notification -->
+    <div id="status-toast">
+      <span class="status-dot"></span>
+      <span id="toast-text">Display Connected</span>
+    </div>
+  </div>
+
+  <script src="/tv.js"></script>
+</body>
+</html>
