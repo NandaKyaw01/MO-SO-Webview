@@ -55,23 +55,62 @@
   let monitorRenderTask = null;
   let modalRenderTask = null;
 
+  // 0. Extract & persist token from URL query (if redirected with ?token=...)
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlToken = urlParams.get('token') || urlParams.get('admin_token');
+  if (urlToken) {
+    localStorage.setItem('admin_token', urlToken);
+    sessionStorage.setItem('admin_token', urlToken);
+    urlParams.delete('token');
+    urlParams.delete('admin_token');
+    const remainingQuery = urlParams.toString();
+    const cleanUrl = window.location.pathname + (remainingQuery ? `?${remainingQuery}` : '');
+    window.history.replaceState({}, document.title, cleanUrl);
+  }
+
+  function getStoredToken() {
+    return localStorage.getItem('admin_token') || sessionStorage.getItem('admin_token') || '';
+  }
+
+  function getAuthHeaders(extraHeaders = {}) {
+    const token = getStoredToken();
+    const headers = { ...extraHeaders };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+      headers['x-admin-token'] = token;
+    }
+    return headers;
+  }
+
+  // Universal authenticated fetch wrapper
+  async function apiFetch(url, options = {}) {
+    const opts = { ...options };
+    opts.credentials = 'include';
+    opts.headers = getAuthHeaders(opts.headers || {});
+    return fetch(url, opts);
+  }
+
   // Socket.io Connection
-  const socket = io();
+  const socket = io({
+    auth: {
+      token: getStoredToken()
+    }
+  });
 
   socket.on('connect', () => {
-    serverStatusDot.classList.remove('offline');
-    serverStatusText.textContent = 'Connected';
+    if (serverStatusDot) serverStatusDot.classList.remove('offline');
+    if (serverStatusText) serverStatusText.textContent = 'Connected';
     socket.emit('register_client', { role: 'admin' });
     fetchMediaLibrary();
   });
 
   socket.on('disconnect', () => {
-    serverStatusDot.classList.add('offline');
-    serverStatusText.textContent = 'Disconnected';
+    if (serverStatusDot) serverStatusDot.classList.add('offline');
+    if (serverStatusText) serverStatusText.textContent = 'Disconnected';
   });
 
   socket.on('stats_update', (stats) => {
-    if (stats && typeof stats.tvCount === 'number') {
+    if (stats && typeof stats.tvCount === 'number' && tvCountText) {
       const plural = stats.tvCount === 1 ? 'TV Screen' : 'TV Screens';
       tvCountText.textContent = `${stats.tvCount} ${plural} Connected`;
     }
@@ -111,8 +150,10 @@
   // 1. Fetch Media Library from Backend
   async function fetchMediaLibrary() {
     try {
-      const res = await fetch('/api/media');
+      const res = await apiFetch('/api/media');
       if (res.status === 401) {
+        localStorage.removeItem('admin_token');
+        sessionStorage.removeItem('admin_token');
         window.location.href = '/login';
         return;
       }
@@ -283,12 +324,14 @@
   // 4. Push to TV Action
   window.pushToTv = async function (filename) {
     try {
-      const res = await fetch('/api/active-media', {
+      const res = await apiFetch('/api/active-media', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename })
       });
       if (res.status === 401) {
+        localStorage.removeItem('admin_token');
+        sessionStorage.removeItem('admin_token');
         window.location.href = '/login';
         return;
       }
@@ -304,37 +347,43 @@
   };
 
   // 5. Clear TV Screen Action
-  btnClearScreen.addEventListener('click', async () => {
-    try {
-      const res = await fetch('/api/active-media', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filename: null })
-      });
-      if (res.status === 401) {
-        window.location.href = '/login';
-        return;
+  if (btnClearScreen) {
+    btnClearScreen.addEventListener('click', async () => {
+      try {
+        const res = await apiFetch('/api/active-media', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename: null })
+        });
+        if (res.status === 401) {
+          localStorage.removeItem('admin_token');
+          sessionStorage.removeItem('admin_token');
+          window.location.href = '/login';
+          return;
+        }
+        const data = await res.json();
+        if (data.success) {
+          activeMedia = null;
+          updateLiveMonitor(null);
+          renderLibrary();
+        }
+      } catch (err) {
+        alert('Error clearing screen: ' + err.message);
       }
-      const data = await res.json();
-      if (data.success) {
-        activeMedia = null;
-        updateLiveMonitor(null);
-        renderLibrary();
-      }
-    } catch (err) {
-      alert('Error clearing screen: ' + err.message);
-    }
-  });
+    });
+  }
 
   // 6. Delete Media Action
   window.deleteMedia = async function (filename) {
     if (!confirm(`Are you sure you want to delete "${filename}"?`)) return;
 
     try {
-      const res = await fetch(`/api/media/${encodeURIComponent(filename)}`, {
+      const res = await apiFetch(`/api/media/${encodeURIComponent(filename)}`, {
         method: 'DELETE'
       });
       if (res.status === 401) {
+        localStorage.removeItem('admin_token');
+        sessionStorage.removeItem('admin_token');
         window.location.href = '/login';
         return;
       }
@@ -444,6 +493,13 @@
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload', true);
+    xhr.withCredentials = true;
+
+    const token = getStoredToken();
+    if (token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+      xhr.setRequestHeader('x-admin-token', token);
+    }
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
@@ -461,12 +517,14 @@
         const res = JSON.parse(xhr.responseText);
         if (res.success && res.file) {
           // If auto-push is enabled, push directly to TV!
-          if (autoPushCheckbox.checked) {
+          if (autoPushCheckbox && autoPushCheckbox.checked) {
             await window.pushToTv(res.file.filename);
           }
           fetchMediaLibrary();
         }
       } else if (xhr.status === 401) {
+        localStorage.removeItem('admin_token');
+        sessionStorage.removeItem('admin_token');
         window.location.href = '/login';
       } else {
         try {
@@ -526,11 +584,12 @@
   if (btnLogout) {
     btnLogout.addEventListener('click', async () => {
       try {
-        await fetch('/api/logout', { method: 'POST' });
+        await apiFetch('/api/logout', { method: 'POST' });
       } catch (err) {
         console.error('Logout error:', err);
       }
       localStorage.removeItem('admin_token');
+      sessionStorage.removeItem('admin_token');
       window.location.href = '/login';
     });
   }

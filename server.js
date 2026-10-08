@@ -9,11 +9,15 @@ const cors = require('cors');
 const crypto = require('crypto');
 
 const app = express();
+// Enable trust proxy for AWS Lightsail, ALB, CloudFront, Nginx reverse proxies
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
+    origin: true,
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
@@ -33,24 +37,65 @@ const ADMIN_CREDENTIALS = {
   password: 'maiifcs'
 };
 
-// Session Secret Management (persisted in uploads/.session_secret)
+// Session Secret Management (persisted in uploads/.session_secret with multi-tier fallback)
 const SECRET_FILE = path.join(UPLOADS_DIR, '.session_secret');
-let SESSION_SECRET = '';
-try {
-  if (fs.existsSync(SECRET_FILE)) {
-    SESSION_SECRET = fs.readFileSync(SECRET_FILE, 'utf-8').trim();
+const ROOT_SECRET_FILE = path.join(__dirname, '.session_secret');
+const STATIC_FALLBACK_SECRET = 'moso-digital-signage-auth-secret-key-maiifcs-2026';
+
+let SESSION_SECRET = (process.env.SESSION_SECRET || '').trim();
+
+if (!SESSION_SECRET) {
+  try {
+    if (fs.existsSync(SECRET_FILE)) {
+      SESSION_SECRET = fs.readFileSync(SECRET_FILE, 'utf-8').trim();
+    } else if (fs.existsSync(ROOT_SECRET_FILE)) {
+      SESSION_SECRET = fs.readFileSync(ROOT_SECRET_FILE, 'utf-8').trim();
+    }
+  } catch (err) {
+    console.error('Error reading session secret file:', err.message);
   }
-} catch (err) {
-  console.error('Error reading session secret:', err);
 }
 
 if (!SESSION_SECRET) {
-  SESSION_SECRET = crypto.randomBytes(32).toString('hex');
   try {
-    fs.writeFileSync(SECRET_FILE, SESSION_SECRET, 'utf-8');
-  } catch (err) {
-    console.error('Error writing session secret:', err);
+    SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+    let written = false;
+    try {
+      fs.writeFileSync(SECRET_FILE, SESSION_SECRET, 'utf-8');
+      written = true;
+    } catch {
+      // Try root directory
+      try {
+        fs.writeFileSync(ROOT_SECRET_FILE, SESSION_SECRET, 'utf-8');
+        written = true;
+      } catch {
+        written = false;
+      }
+    }
+    if (!written) {
+      console.warn('Could not persist random session secret to disk; using stable fallback key for multi-process consistency.');
+      SESSION_SECRET = STATIC_FALLBACK_SECRET;
+    }
+  } catch {
+    SESSION_SECRET = STATIC_FALLBACK_SECRET;
   }
+}
+
+// Helper to determine if request is secure (HTTPS)
+function isRequestSecure(req) {
+  if (!req) return false;
+  return Boolean(req.secure || req.headers['x-forwarded-proto'] === 'https');
+}
+
+// Cookie Helpers
+function setSessionCookie(res, token, req) {
+  const secureAttr = isRequestSecure(req) ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${secureAttr}`);
+}
+
+function clearSessionCookie(res, req) {
+  const secureAttr = isRequestSecure(req) ? '; Secure' : '';
+  res.setHeader('Set-Cookie', `admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureAttr}`);
 }
 
 // Session Token Creation & Verification (HMAC-SHA256)
@@ -105,18 +150,45 @@ function parseCookies(cookieHeader) {
 }
 
 function getAuthToken(req) {
-  const cookies = parseCookies(req.headers.cookie || '');
+  if (!req) return null;
+
+  // 1. Authorization header (Bearer <token>)
+  const authHeader = req.headers && req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const bearer = authHeader.substring(7).trim();
+    if (bearer) return bearer;
+  }
+
+  // 2. Custom header (x-admin-token)
+  if (req.headers && req.headers['x-admin-token']) {
+    return req.headers['x-admin-token'].trim();
+  }
+
+  // 3. Cookie (admin_session)
+  const cookies = parseCookies((req.headers && req.headers.cookie) || '');
   if (cookies['admin_session']) {
     return cookies['admin_session'];
   }
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    return authHeader.substring(7).trim();
+
+  // 4. Query parameter (?token=... or ?admin_token=...)
+  if (req.query) {
+    if (req.query.token && typeof req.query.token === 'string') {
+      return req.query.token.trim();
+    }
+    if (req.query.admin_token && typeof req.query.admin_token === 'string') {
+      return req.query.admin_token.trim();
+    }
   }
+
   return null;
 }
 
 function requireAdminAuth(req, res, next) {
+  // Prevent proxies/browsers from caching protected routes or redirect states
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const token = getAuthToken(req);
   const session = verifySessionToken(token);
   if (session && session.username === ADMIN_CREDENTIALS.username) {
@@ -190,7 +262,10 @@ function getStats() {
 }
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -226,10 +301,14 @@ app.get('/api/media-data/:filename', (req, res) => {
 
 // Authentication Endpoints
 app.post('/api/login', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const { username, password } = req.body || {};
   if (username === ADMIN_CREDENTIALS.username && password === ADMIN_CREDENTIALS.password) {
     const token = createSessionToken(username);
-    res.setHeader('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
+    setSessionCookie(res, token, req);
     return res.json({
       success: true,
       message: 'Login successful',
@@ -244,14 +323,24 @@ app.post('/api/login', (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => {
-  res.setHeader('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  clearSessionCookie(res, req);
   return res.json({ success: true, message: 'Logged out successfully' });
 });
 
 app.get('/api/auth/me', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const token = getAuthToken(req);
   const session = verifySessionToken(token);
   if (session && session.username === ADMIN_CREDENTIALS.username) {
+    // Re-assert cookie if accessed via header or query token
+    setSessionCookie(res, token, req);
     return res.json({ authenticated: true, user: { username: session.username } });
   }
   return res.status(401).json({ authenticated: false });
@@ -259,6 +348,10 @@ app.get('/api/auth/me', (req, res) => {
 
 // Friendly Routes (Registered BEFORE express.static to enforce auth protection)
 app.get(['/login', '/login.html'], (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const token = getAuthToken(req);
   const session = verifySessionToken(token);
   if (session && session.username === ADMIN_CREDENTIALS.username) {
@@ -268,6 +361,10 @@ app.get(['/login', '/login.html'], (req, res) => {
 });
 
 app.get('/', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const token = getAuthToken(req);
   const session = verifySessionToken(token);
   if (session && session.username === ADMIN_CREDENTIALS.username) {
@@ -277,6 +374,15 @@ app.get('/', (req, res) => {
 });
 
 app.get(['/admin', '/admin.html'], requireAdminAuth, (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
+  // Re-assert session cookie if authenticated via query param or header
+  const token = getAuthToken(req);
+  if (token) {
+    setSessionCookie(res, token, req);
+  }
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
