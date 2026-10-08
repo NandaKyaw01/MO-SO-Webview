@@ -6,6 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const cors = require('cors');
+const crypto = require('crypto');
 
 const app = express();
 const server = http.createServer(app);
@@ -24,6 +25,113 @@ const STATE_FILE = path.join(__dirname, 'uploads', 'active-state.json');
 // Ensure uploads folder exists
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+
+// Hardcoded Admin Credentials
+const ADMIN_CREDENTIALS = {
+  username: 'admin',
+  password: 'maiifcs'
+};
+
+// Session Secret Management (persisted in uploads/.session_secret)
+const SECRET_FILE = path.join(UPLOADS_DIR, '.session_secret');
+let SESSION_SECRET = '';
+try {
+  if (fs.existsSync(SECRET_FILE)) {
+    SESSION_SECRET = fs.readFileSync(SECRET_FILE, 'utf-8').trim();
+  }
+} catch (err) {
+  console.error('Error reading session secret:', err);
+}
+
+if (!SESSION_SECRET) {
+  SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+  try {
+    fs.writeFileSync(SECRET_FILE, SESSION_SECRET, 'utf-8');
+  } catch (err) {
+    console.error('Error writing session secret:', err);
+  }
+}
+
+// Session Token Creation & Verification (HMAC-SHA256)
+function createSessionToken(username) {
+  const payload = {
+    username,
+    exp: Date.now() + (7 * 24 * 60 * 60 * 1000) // 7 days
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = crypto.createHmac('sha256', SESSION_SECRET).update(payloadB64).digest('base64url');
+  return `${payloadB64}.${signature}`;
+}
+
+function verifySessionToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [payloadB64, signature] = parts;
+
+  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payloadB64).digest('base64url');
+  if (signature !== expectedSig) return null;
+
+  try {
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
+    if (payload.exp && Date.now() > payload.exp) {
+      return null; // Expired
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) return cookies;
+  const pairs = cookieHeader.split(';');
+  for (let i = 0; i < pairs.length; i++) {
+    const pair = pairs[i].trim();
+    if (!pair) continue;
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = pair.substring(0, eqIdx).trim();
+    const val = pair.substring(eqIdx + 1).trim();
+    try {
+      cookies[key] = decodeURIComponent(val);
+    } catch {
+      cookies[key] = val;
+    }
+  }
+  return cookies;
+}
+
+function getAuthToken(req) {
+  const cookies = parseCookies(req.headers.cookie || '');
+  if (cookies['admin_session']) {
+    return cookies['admin_session'];
+  }
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.substring(7).trim();
+  }
+  return null;
+}
+
+function requireAdminAuth(req, res, next) {
+  const token = getAuthToken(req);
+  const session = verifySessionToken(token);
+  if (session && session.username === ADMIN_CREDENTIALS.username) {
+    req.user = session;
+    return next();
+  }
+
+  // Browser navigation requests redirect to login
+  const acceptHeader = req.headers.accept || '';
+  if (acceptHeader.includes('text/html') || req.path === '/admin' || req.path === '/admin.html' || req.path === '/') {
+    return res.redirect('/login');
+  }
+
+  // API calls return 401 Unauthorized
+  return res.status(401).json({ success: false, error: 'Unauthorized. Please log in.' });
 }
 
 // Helpers for persistent metadata and active media state
@@ -98,9 +206,6 @@ app.use('/uploads', express.static(UPLOADS_DIR, {
   }
 }));
 
-// Serve public static frontend
-app.use(express.static(path.join(__dirname, 'public')));
-
 // Dedicated binary stream endpoint for TV and Admin that avoids IDM / Download Manager interception
 app.get('/api/media-data/:filename', (req, res) => {
   const { filename } = req.params;
@@ -119,18 +224,68 @@ app.get('/api/media-data/:filename', (req, res) => {
   fileStream.pipe(res);
 });
 
-// Friendly routes
-app.get('/', (req, res) => {
-  res.redirect('/admin.html');
+// Authentication Endpoints
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (username === ADMIN_CREDENTIALS.username && password === ADMIN_CREDENTIALS.password) {
+    const token = createSessionToken(username);
+    res.setHeader('Set-Cookie', `admin_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
+    return res.json({
+      success: true,
+      message: 'Login successful',
+      token,
+      user: { username }
+    });
+  }
+  return res.status(401).json({
+    success: false,
+    error: 'Invalid username or password'
+  });
 });
 
-app.get('/admin', (req, res) => {
+app.post('/api/logout', (req, res) => {
+  res.setHeader('Set-Cookie', 'admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+  return res.json({ success: true, message: 'Logged out successfully' });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  const token = getAuthToken(req);
+  const session = verifySessionToken(token);
+  if (session && session.username === ADMIN_CREDENTIALS.username) {
+    return res.json({ authenticated: true, user: { username: session.username } });
+  }
+  return res.status(401).json({ authenticated: false });
+});
+
+// Friendly Routes (Registered BEFORE express.static to enforce auth protection)
+app.get(['/login', '/login.html'], (req, res) => {
+  const token = getAuthToken(req);
+  const session = verifySessionToken(token);
+  if (session && session.username === ADMIN_CREDENTIALS.username) {
+    return res.redirect('/admin');
+  }
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+app.get('/', (req, res) => {
+  const token = getAuthToken(req);
+  const session = verifySessionToken(token);
+  if (session && session.username === ADMIN_CREDENTIALS.username) {
+    return res.redirect('/admin');
+  }
+  return res.redirect('/login');
+});
+
+app.get(['/admin', '/admin.html'], requireAdminAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
-app.get('/tv', (req, res) => {
+app.get(['/tv', '/tv.html'], (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'tv.html'));
 });
+
+// Serve public static frontend (CSS, JS, images, libs)
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Multer Storage Configuration
 const storage = multer.diskStorage({
@@ -180,8 +335,8 @@ function getMediaType(filename) {
 
 // API Routes
 
-// 1. Upload File
-app.post('/api/upload', (req, res) => {
+// 1. Upload File (Protected)
+app.post('/api/upload', requireAdminAuth, (req, res) => {
   upload.single('file')(req, res, (err) => {
     if (err) {
       return res.status(400).json({ success: false, error: err.message });
@@ -217,8 +372,8 @@ app.post('/api/upload', (req, res) => {
   });
 });
 
-// 2. Get Media Library
-app.get('/api/media', (req, res) => {
+// 2. Get Media Library (Protected)
+app.get('/api/media', requireAdminAuth, (req, res) => {
   try {
     const meta = readMetadata();
     const files = fs.readdirSync(UPLOADS_DIR);
@@ -226,7 +381,7 @@ app.get('/api/media', (req, res) => {
     const mediaList = [];
 
     for (const f of files) {
-      if (f === 'metadata.json' || f === 'active-state.json') continue;
+      if (f === 'metadata.json' || f === 'active-state.json' || f.startsWith('.')) continue;
       
       const filePath = path.join(UPLOADS_DIR, f);
       try {
@@ -267,7 +422,7 @@ app.get('/api/media', (req, res) => {
   }
 });
 
-// 3. Get Current Active Media
+// 3. Get Current Active Media (Public for TV Display / Status)
 app.get('/api/active-media', (req, res) => {
   return res.json({
     success: true,
@@ -275,8 +430,8 @@ app.get('/api/active-media', (req, res) => {
   });
 });
 
-// 4. Set Active Media (Push to TV)
-app.post('/api/active-media', (req, res) => {
+// 4. Set Active Media - Push to TV (Protected)
+app.post('/api/active-media', requireAdminAuth, (req, res) => {
   const { filename } = req.body;
 
   if (!filename) {
@@ -324,8 +479,8 @@ app.post('/api/active-media', (req, res) => {
   });
 });
 
-// 5. Delete Media
-app.delete('/api/media/:filename', (req, res) => {
+// 5. Delete Media (Protected)
+app.delete('/api/media/:filename', requireAdminAuth, (req, res) => {
   const { filename } = req.params;
   const filePath = path.join(UPLOADS_DIR, filename);
 
@@ -371,8 +526,16 @@ io.on('connection', (socket) => {
     console.log(`[Socket] Client ${socket.id} registered as '${role}' from ${clientIp}`);
   });
 
-  // Push to TV directly via socket (optional alternative to REST)
+  // Push to TV directly via socket (Verify admin session)
   socket.on('set_active_media', (data) => {
+    const cookies = parseCookies(socket.handshake.headers.cookie || '');
+    const token = cookies['admin_session'];
+    const session = verifySessionToken(token);
+    if (!session || session.username !== ADMIN_CREDENTIALS.username) {
+      console.warn(`[Socket] Unauthorized set_active_media attempt from client ${socket.id}`);
+      return;
+    }
+
     if (!data || !data.filename) {
       activeMedia = null;
       writeActiveState(null);
@@ -429,14 +592,17 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('====================================================');
   console.log('  DIGITAL SIGNAGE SYSTEM STARTED');
   console.log('====================================================');
-  console.log(`  Local Admin:    http://localhost:${PORT}/admin`);
-  console.log(`  Local TV Client: http://localhost:${PORT}/tv`);
+  console.log(`  Admin Login:    http://localhost:${PORT}/login`);
+  console.log(`  Admin Panel:    http://localhost:${PORT}/admin`);
+  console.log(`  TV Client:      http://localhost:${PORT}/tv`);
+  console.log(`  Credentials:    Username: admin | Password: maiifcs`);
   if (ips.length > 0) {
     console.log('----------------------------------------------------');
     console.log('  Network URLs (for TV / Remote Devices):');
     ips.forEach(ip => {
       console.log(`    TV Client:    http://${ip}:${PORT}/tv`);
       console.log(`    Admin Panel:  http://${ip}:${PORT}/admin`);
+      console.log(`    Login Page:   http://${ip}:${PORT}/login`);
     });
   }
   console.log('====================================================');

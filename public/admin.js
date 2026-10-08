@@ -112,6 +112,10 @@
   async function fetchMediaLibrary() {
     try {
       const res = await fetch('/api/media');
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
       const data = await res.json();
       if (data.success) {
         mediaList = data.media || [];
@@ -284,6 +288,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename })
       });
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
       const data = await res.json();
       if (data.success) {
         activeMedia = data.activeMedia;
@@ -303,6 +311,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename: null })
       });
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
       const data = await res.json();
       if (data.success) {
         activeMedia = null;
@@ -322,6 +334,10 @@
       const res = await fetch(`/api/media/${encodeURIComponent(filename)}`, {
         method: 'DELETE'
       });
+      if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+      }
       const data = await res.json();
       if (data.success) {
         fetchMediaLibrary();
@@ -450,6 +466,8 @@
           }
           fetchMediaLibrary();
         }
+      } else if (xhr.status === 401) {
+        window.location.href = '/login';
       } else {
         try {
           const errRes = JSON.parse(xhr.responseText);
@@ -502,6 +520,20 @@
       renderLibrary();
     });
   });
+
+  // 9. Logout Handler
+  const btnLogout = document.getElementById('btn-logout');
+  if (btnLogout) {
+    btnLogout.addEventListener('click', async () => {
+      try {
+        await fetch('/api/logout', { method: 'POST' });
+      } catch (err) {
+        console.error('Logout error:', err);
+      }
+      localStorage.removeItem('admin_token');
+      window.location.href = '/login';
+    });
+  }
 
   // Initial Load
   fetchMediaLibrary();

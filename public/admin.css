@@ -179,6 +179,53 @@ body {
   height: 16px;
 }
 
+/* User Profile Badge */
+.user-profile-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.85rem;
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 9999px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #c7d2fe;
+}
+
+.user-name-text {
+  font-family: inherit;
+  letter-spacing: 0.02em;
+}
+
+/* Logout Button */
+.btn-logout {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.95rem;
+  background: rgba(244, 63, 94, 0.08);
+  border: 1px solid rgba(244, 63, 94, 0.2);
+  border-radius: var(--radius-sm);
+  color: #fca5a5;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-logout:hover {
+  background: rgba(244, 63, 94, 0.18);
+  border-color: rgba(244, 63, 94, 0.4);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+.btn-logout svg {
+  width: 15px;
+  height: 15px;
+}
+
 /* Grid Layout */
 .dashboard-grid {
   display: grid;
